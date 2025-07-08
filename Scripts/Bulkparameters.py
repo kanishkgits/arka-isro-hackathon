@@ -56,6 +56,18 @@ def load_blk_variables(DATA_PATH, INVALID):
     # Convert all lists to NumPy arrays
     for key in all_data:
         all_data[key] = np.array(all_data[key])
+    for key in all_data:
+        if(key == 'time'):
+            continue
+        all_data[key] = moving_average(all_data[key], 100)
+        all_data[key] = min_max_scale(all_data[key])
+    all_data['time'] =all_data['time'][99:]
 
     return all_data
+
+def moving_average(arr, window_size):
+    return np.convolve(arr, np.ones(window_size)/window_size, mode='valid')
+
+def min_max_scale(arr):
+    return (arr - np.min(arr)) / (np.max(arr) - np.min(arr))
 
