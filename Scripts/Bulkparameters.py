@@ -59,9 +59,9 @@ def load_blk_variables(DATA_PATH, INVALID):
     for key in all_data:
         if(key == 'time'):
             continue
-        all_data[key] = moving_average(all_data[key], 100)
+        all_data[key] = moving_average(all_data[key], 50)
         all_data[key] = min_max_scale(all_data[key])
-    all_data['time'] =all_data['time'][99:]
+    all_data['time'] =all_data['time'][49:]
 
     return all_data
 

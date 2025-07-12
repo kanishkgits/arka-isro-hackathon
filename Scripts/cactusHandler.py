@@ -10,8 +10,8 @@ def parse_cactus_file(file_path):
                 parts = line.strip().split('|')
                 if len(parts) < 10:
                     continue  # Ensure enough columns
-                halo = parts[-1].strip()
-                if halo:  # Only consider lines with non-empty halo
+                halo = parts[-1].strip()  
+                if halo:
                     try:
                         t0 = parts[1].strip()
                         t0_dt = datetime.strptime(t0, "%Y/%m/%d %H:%M")

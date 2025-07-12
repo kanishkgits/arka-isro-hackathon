@@ -1,13 +1,13 @@
 import numpy as np
 import pandas as pd
 from datetime import timedelta
-from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score, f1_score
-from imblearn.pipeline import Pipeline as ImbPipeline
-from imblearn.combine import SMOTETomek
-
+from sklearn.metrics import (
+    classification_report, confusion_matrix, f1_score, accuracy_score,
+    precision_recall_curve, average_precision_score
+)
+from imblearn.under_sampling import RandomUnderSampler
 
 def create_dataframe_from_numpy_dict(data_dict):
     df = pd.DataFrame({key: val for key, val in data_dict.items() if key != 'time'})
@@ -16,7 +16,7 @@ def create_dataframe_from_numpy_dict(data_dict):
 
 
 def label_cme_occurrences(df, cme_times):
-    df['cme_label'] = 0  # 0: none, 1: fast, 2: slow
+    df['cme_label'] = 0  # 0: no CME, 1: CME (within ±30 min)
 
     if df['time'].dt.tz is None:
         df['time'] = df['time'].dt.tz_localize('UTC')
@@ -30,13 +30,9 @@ def label_cme_occurrences(df, cme_times):
     df = df.sort_values('time')
 
     for t in cme_times:
-        short_start = t + timedelta(minutes=10)
-        short_end = t + timedelta(minutes=40)
-        long_start = t + timedelta(days=3)
-        long_end = t + timedelta(days=4)
-
-        df.loc[(df['time'] >= short_start) & (df['time'] <= short_end), 'cme_label'] = 1
-        df.loc[(df['time'] >= long_start) & (df['time'] <= long_end), 'cme_label'] = 2
+        window_start = t - timedelta(minutes=30)
+        window_end = t + timedelta(minutes=30)
+        df.loc[(df['time'] >= window_start) & (df['time'] <= window_end), 'cme_label'] = 1
 
     return df
 
@@ -46,42 +42,42 @@ def train_cme_prediction_model(data_dict, cme_times, test_size=0.2, random_state
     df = create_dataframe_from_numpy_dict(data_dict)
     df = label_cme_occurrences(df, cme_times)
 
-    feature_cols = [col for col in df.columns if col not in ['time', 'cme_label']]
+    df['delta_density'] = df['proton_density'].diff().fillna(0)
+    df['rolling_speed_mean'] = df['proton_bulk_speed'].rolling(window=15).mean().bfill()
+
+
+    feature_cols = ['delta_density', 'rolling_speed_mean']
     X = df[feature_cols].values
     y = df['cme_label'].values
 
+    # Step 2: Split
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, stratify=y, test_size=test_size, random_state=random_state
     )
 
-    # Step 2: Pipeline with SMOTETomek and Random Forest
-    pipe = ImbPipeline([
-        ('scaler', StandardScaler()),
-        ('smote', SMOTETomek(random_state=random_state)),
-        ('clf',RandomForestClassifier(class_weight='balanced_subsample', random_state=random_state))
-    ])
+    # Step 3: Under-sampling
+    rus = RandomUnderSampler(random_state=random_state)
+    X_train_resampled, y_train_resampled = rus.fit_resample(X_train, y_train)
 
-    param_grid = {
-    'clf__n_estimators': [100],           # Just one reasonable default
-    'clf__max_depth': [10, None]          # Shallow vs deep
-    }
+    # Step 4: Train classifier (use class_weight to focus more on CME)
+    clf = RandomForestClassifier(
+        n_estimators=50,
+        max_depth=6,
+        min_samples_leaf=10,
+        class_weight={0: 1, 1: 3},  # CME weighted more
+        random_state=random_state,
+        n_jobs=-1
+    )
+    clf.fit(X_train_resampled, y_train_resampled)
 
-    grid = GridSearchCV(pipe, param_grid, cv=3, scoring='f1_macro', verbose=1, n_jobs=-1)
-    grid.fit(X_train, y_train)
+    # Step 5: Evaluation
+    y_proba = clf.predict_proba(X_test)[:, 1]  # CME probability
+    threshold = 0.75
+    y_pred = (y_proba >= threshold).astype(int)
 
-    best_model = grid.best_estimator_
+    # Step 6: Predict for full data
+    df['cme_pred'] = clf.predict(X)
+    df['cme_proba'] = clf.predict_proba(X)[:, 1]  # probability of CME
+    df['weighted_signal'] = df['cme_proba'].rolling(window=10, center=True).mean().fillna(0)
 
-    # Step 3: Evaluation
-    y_pred = best_model.predict(X_test)
-    print("Confusion Matrix:\n", confusion_matrix(y_test, y_pred))
-    print("\nClassification Report:\n", classification_report(
-        y_test, y_pred, target_names=['None', 'Fast', 'Slow']
-    ))
-    print("Macro F1 Score:", f1_score(y_test, y_pred, average='macro'))
-    print("Weighted F1 Score:", f1_score(y_test, y_pred, average='weighted'))
-
-    # Step 4: Predict on full dataset
-    X_scaled = best_model.named_steps['scaler'].transform(X)
-    df['cme_pred'] = best_model.named_steps['clf'].predict(X_scaled)
-
-    return df, best_model.named_steps['clf'], dict(zip(feature_cols, best_model.named_steps['clf'].feature_importances_))
+    return df, clf, dict(zip(feature_cols, clf.feature_importances_))
