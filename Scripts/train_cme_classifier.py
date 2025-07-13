@@ -1,12 +1,8 @@
-import numpy as np
 import pandas as pd
+import joblib
 from datetime import timedelta
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import (
-    classification_report, confusion_matrix, f1_score, accuracy_score,
-    precision_recall_curve, average_precision_score
-)
 from imblearn.under_sampling import RandomUnderSampler
 
 def create_dataframe_from_numpy_dict(data_dict):
@@ -38,15 +34,16 @@ def label_cme_occurrences(df, cme_times):
 
 
 def train_cme_prediction_model(data_dict, cme_times, test_size=0.2, random_state=42):
+
     # Step 1: Prepare data
     df = create_dataframe_from_numpy_dict(data_dict)
     df = label_cme_occurrences(df, cme_times)
 
-    df['delta_density'] = df['proton_density'].diff().fillna(0)
-    df['rolling_speed_mean'] = df['proton_bulk_speed'].rolling(window=15).mean().bfill()
+    df['delta_speed'] = df['proton_bulk_speed'].diff().fillna(0)
+    df['rolling_thermal_mean'] = df['proton_thermal'].rolling(window=5).mean().bfill()
+    df['rolling_density_mean'] = df['proton_density'].rolling(window=5).mean().bfill()
 
-
-    feature_cols = ['delta_density', 'rolling_speed_mean']
+    feature_cols = ['delta_speed', 'rolling_thermal_mean', 'rolling_density_mean']
     X = df[feature_cols].values
     y = df['cme_label'].values
 
@@ -70,14 +67,37 @@ def train_cme_prediction_model(data_dict, cme_times, test_size=0.2, random_state
     )
     clf.fit(X_train_resampled, y_train_resampled)
 
-    # Step 5: Evaluation
-    y_proba = clf.predict_proba(X_test)[:, 1]  # CME probability
-    threshold = 0.75
-    y_pred = (y_proba >= threshold).astype(int)
-
-    # Step 6: Predict for full data
-    df['cme_pred'] = clf.predict(X)
+    # Step 5: Predict for full data
     df['cme_proba'] = clf.predict_proba(X)[:, 1]  # probability of CME
+    threshold = 0.8
+    df['cme_pred'] = (df['cme_proba'] >= threshold).astype(int)
     df['weighted_signal'] = df['cme_proba'].rolling(window=10, center=True).mean().fillna(0)
 
     return df, clf, dict(zip(feature_cols, clf.feature_importances_))
+
+def save_model(clf):
+    joblib.dump(clf, 'trained_cme_classifier.pkl')
+
+def evaluate_cme_windows(df, cme_times, window_minutes=120):
+    detected_windows = 0
+    missed_windows = 0
+
+    df = df.copy()
+    df['time'] = pd.to_datetime(df['time'])
+    df = df.sort_values('time')
+
+    for t in cme_times:
+        t = pd.Timestamp(t).tz_localize('UTC') if pd.Timestamp(t).tzinfo is None else pd.Timestamp(t).tz_convert('UTC')
+        window_start = t - timedelta(minutes=window_minutes)
+        window_end = t + timedelta(minutes=window_minutes)
+
+        in_window = df[(df['time'] >= window_start) & (df['time'] <= window_end)]
+
+        if (in_window['cme_pred'] == 1).any():
+            detected_windows += 1
+        else:
+            missed_windows += 1
+
+    total_windows = detected_windows + missed_windows
+    print(f"\n=== CME Window Evaluation ===")
+    print(f"Detection Rate: {detected_windows / total_windows:.2%}")

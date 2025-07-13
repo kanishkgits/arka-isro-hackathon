@@ -3,7 +3,8 @@ from spacepy.pycdf import CDF
 import datetime as dt
 import glob
 
-def load_blk_variables(DATA_PATH, INVALID):
+#loading bulk data from cdf files
+def load_blk_variables(DATA_PATH, INVALID = -1e31):
     all_data = {
         'time': [],
         'proton_density': [],
@@ -59,15 +60,41 @@ def load_blk_variables(DATA_PATH, INVALID):
     for key in all_data:
         if(key == 'time'):
             continue
-        all_data[key] = moving_average(all_data[key], 50)
+        all_data[key] = moving_average(all_data[key], 10)
         all_data[key] = min_max_scale(all_data[key])
-    all_data['time'] =all_data['time'][49:]
+    all_data['time'] =all_data['time'][9:]
 
     return all_data
 
+#scaling and smoothing
 def moving_average(arr, window_size):
     return np.convolve(arr, np.ones(window_size)/window_size, mode='valid')
 
 def min_max_scale(arr):
     return (arr - np.min(arr)) / (np.max(arr) - np.min(arr))
 
+#plotting
+import matplotlib.pyplot as plt
+
+def plot_blk_parameters(data):
+    plots = [
+        ('proton_bulk_speed', 'Proton Bulk Speed'),
+        ('alpha_bulk_speed', 'Alpha Bulk Speed', 'tab:orange'),
+        ('proton_density', 'Proton Density'),
+        ('alpha_density', 'Alpha Density', 'tab:orange'),
+        ('proton_thermal', 'Proton Thermal'),
+        ('alpha_thermal', 'Alpha Thermal', 'tab:orange'),
+        ('proton_xvelocity', 'Proton X velocity'),
+        ('proton_yvelocity', 'Proton Y velocity'),
+        ('proton_zvelocity', 'Proton Z velocity'),
+    ]
+
+    for plot in plots:
+        key, title = plot[0], plot[1]
+        color = plot[2] if len(plot) == 3 else None
+
+        plt.figure(figsize=(20, 5))
+        plt.plot(data['time'], data[key], label=title, linewidth=0.5, color=color)
+        plt.title(title)
+        plt.xlabel("Time")
+        plt.show()
